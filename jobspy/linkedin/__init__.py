@@ -4,6 +4,7 @@ import random
 import re
 import time
 from datetime import date
+from pathlib import Path
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -170,26 +171,63 @@ class LinkedIn(Scraper):
             currency=currencies.get(currency, currency),
         )
 
-    def _fetch_details(self, job_id: str) -> dict:
+    def _get_cached_job_details(self, job_id: str) -> str | None:
         """
-        The job page's description, pay, logo and criteria; empty when the page can't be read
+        Fetches job description and other job details by going to the job page url
+        or getting a cached version from the disk.
+
+        Returns the html string or None if not found
+
+        :param job_id: The ID of the LinkedIn job.
+        :return: str or None
         """
+        cache_dir = Path("/tmp/_jobspy_linkedin_detail_pages")
+        cache_file = cache_dir / f"li-{job_id}.html"
+
+        # Check if cached file exists and read from it
+        if cache_file.exists():
+            try:
+                return cache_file.read_text(encoding="utf-8")
+            except Exception:
+                # If reading the cache fails for some reason, fall back to fetching
+                pass
+
         try:
             response = self.session.get(f"{self.base_url}/jobs/view/{job_id}")
         except Exception as e:
             self.log.warning(f"job {job_id}: {e}")
-            return {}
+            return None
         if response.status_code != 200:
             self.log.warning(
                 f"response status code {response.status_code} for job {job_id}"
             )
-            return {}
+            return None
         path = urlparse(response.url).path
         if not path.startswith("/jobs/view/"):
             self.log.warning(f"job {job_id}: redirected to {path}")
+            return None
+
+        # Save successful response to disk cache
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(response.text, encoding="utf-8")
+        except Exception:
+            # If writing to cache fails (e.g., due to permission issues),
+            # return the response text anyway so the flow is not disrupted.
+            pass
+
+        return response.text
+
+    def _fetch_details(self, job_id: str) -> dict:
+        """
+        The job page's description, pay, logo and criteria; empty when the page can't be read
+        """
+        html = self._get_cached_job_details(job_id)
+
+        if html is None:
             return {}
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
         div_content = soup.find("div", class_="show-more-less-html__markup")
         if div_content:
             div_content.attrs.clear()
